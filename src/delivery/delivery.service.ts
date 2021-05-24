@@ -1,5 +1,5 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
-import { NOTIFICATION_SERVICE, ORDER_SERVICE } from "src/constants";
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { NOTIFICATION_SERVICE, ORDER_SERVICE } from 'src/constants';
 import { ClientProxy } from '@nestjs/microservices';
 
 @Injectable()
