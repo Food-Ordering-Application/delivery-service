@@ -22,7 +22,7 @@ export class DeliveryService {
   async sendUpdateDriverForOrderEvent(
     payload: UpdateDriverForOrderEventPayload,
   ) {
-    this.notificationServiceClient.emit('updateDriverForOrderEvent', payload);
+    this.orderServiceClient.emit('updateDriverForOrderEvent', payload);
     this.logger.log(payload, 'noti: updateDriverForOrderEvent');
   }
 
