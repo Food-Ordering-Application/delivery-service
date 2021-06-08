@@ -1,5 +1,9 @@
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
-import { NOTIFICATION_SERVICE, ORDER_SERVICE } from 'src/constants';
+import {
+  NOTIFICATION_SERVICE,
+  ORDER_SERVICE,
+  USER_SERVICE,
+} from 'src/constants';
 import { ClientProxy } from '@nestjs/microservices';
 import { DriverAcceptOrderDto } from './dto';
 import { IDriverAcceptOrderResponse } from './interfaces';
@@ -15,6 +19,8 @@ export class DeliveryService {
     private notificationServiceClient: ClientProxy,
     @Inject(ORDER_SERVICE)
     private orderServiceClient: ClientProxy,
+    @Inject(USER_SERVICE)
+    private userServiceClient: ClientProxy,
   ) {}
 
   private readonly logger = new Logger('DeliveryService');
@@ -47,6 +53,15 @@ export class DeliveryService {
 
   async handleDispatchDriver(order: OrderEventPayload) {
     const { id } = order;
+
+    //TODO: Check driver đủ điều kiện accept đơn
+    // const response = await this.userServiceClient.send(
+    //   'checkDriverAccountBalance',
+    //   {
+    //     order,
+    //     driverId: anyDriverId,
+    //   },
+    // );
     // TODO: calculate and dispatch driver
     this.sendDispatchDriverEvent({ orderId: id, driverId: MOCK_DRIVER_ID });
   }
