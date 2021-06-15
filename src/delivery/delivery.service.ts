@@ -2,6 +2,7 @@ import {
   UpdateDriverLocationDto,
   Location,
   UpdateDriverActiveStatusDto,
+  GetDriverActiveStatusDto,
 } from './dto/';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import {
@@ -164,6 +165,28 @@ export class DeliveryService {
       return {
         status: HttpStatus.OK,
         message: 'Update active status successfully',
+      };
+    } catch (e) {
+      return {
+        status: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: e.message,
+      };
+    }
+  }
+
+  async getDriverActiveStatus(
+    getDriverActiveStatusDto: GetDriverActiveStatusDto,
+  ) {
+    const { driverId } = getDriverActiveStatusDto;
+    const activeKey = `driver:active`;
+    try {
+      const result = await this.redis.sismember(activeKey, driverId);
+      return {
+        status: HttpStatus.OK,
+        message: 'Get active status successfully',
+        data: {
+          activeStatus: result,
+        },
       };
     } catch (e) {
       return {
