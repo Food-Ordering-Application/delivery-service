@@ -99,26 +99,42 @@ export class DeliveryService {
     const geoKey = geoHash;
     const orderKey = `driver:${driverId}:order`;
 
+    const isDriverActive = await this.getDriverActiveStatusService(driverId);
+
     const pipeline = this.redis.pipeline();
 
     // update location
     pipeline.set(preciseLocationKey, jsonLocation);
 
-    // update driver set by location
-    pipeline.zadd(geoKey, driverId, currentTimestamp);
+    if (isDriverActive) {
+      // update driver set by location
+      pipeline.zadd(geoKey, driverId, currentTimestamp);
+      pipeline.zremrangebyscore(
+        geoKey,
+        -Infinity,
+        currentTimestamp - 30 * 1000,
+      );
 
-    // get ongoing orderId of driver to broadcast update
-    pipeline.get(orderKey);
+      // get ongoing orderId of driver to broadcast update
+      pipeline.get(orderKey);
+    }
 
     try {
+      const pipelineResponse = await pipeline.exec();
+      if (!isDriverActive) {
+        return;
+      }
       const [
         updateLocationOfDriverResponse,
         updateDriverSetResponse,
+        removeExpiredDriverSetResponse,
         getOrderByDriverResponse,
-      ] = await pipeline.exec();
+      ] = pipelineResponse;
+
       console.log({
         updateLocationOfDriverResponse,
         updateDriverSetResponse,
+        removeExpiredDriverSetResponse,
         getOrderByDriverResponse,
       });
 
