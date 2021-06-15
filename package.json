@@ -29,6 +29,7 @@
     "db:setup": "npm run schema:drop && npm run seed:run"
   },
   "dependencies": {
+    "@nestjs-modules/ioredis": "^1.0.0",
     "@nestjs/common": "^7.6.13",
     "@nestjs/config": "^0.6.3",
     "@nestjs/core": "^7.6.13",
@@ -36,10 +37,13 @@
     "@nestjs/microservices": "^7.6.15",
     "@nestjs/platform-express": "^7.6.13",
     "@nestjs/typeorm": "^7.1.5",
+    "@types/ioredis": "^4.26.4",
     "amqp-connection-manager": "^3.2.2",
     "amqplib": "^0.7.1",
+    "ioredis": "^4.27.6",
     "joi": "^17.4.0",
     "lodash": "^4.17.21",
+    "nodes2ts": "^2.0.0",
     "pg": "^8.6.0",
     "reflect-metadata": "^0.1.13",
     "rimraf": "^3.0.2",
