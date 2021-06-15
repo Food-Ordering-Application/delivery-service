@@ -8,6 +8,7 @@ import {
 } from 'src/constants';
 import { DeliveryController } from './delivery.controller';
 import { DeliveryService } from './delivery.service';
+import { RedisModule } from '@nestjs-modules/ioredis';
 
 @Module({
   imports: [
@@ -58,6 +59,14 @@ import { DeliveryService } from './delivery.service';
         }),
       },
     ]),
+    RedisModule.forRoot({
+      config: {
+        host: 'localhost',
+        port: 6379,
+        username: '123',
+        password: 'redis_password',
+      },
+    }),
   ],
   controllers: [DeliveryController],
   providers: [DeliveryService],
