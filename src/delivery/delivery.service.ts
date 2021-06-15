@@ -174,13 +174,17 @@ export class DeliveryService {
     }
   }
 
+  async getDriverActiveStatusService(driverId: string) {
+    const activeKey = `driver:active`;
+    return this.redis.sismember(activeKey, driverId);
+  }
+
   async getDriverActiveStatus(
     getDriverActiveStatusDto: GetDriverActiveStatusDto,
   ) {
-    const { driverId } = getDriverActiveStatusDto;
-    const activeKey = `driver:active`;
     try {
-      const result = await this.redis.sismember(activeKey, driverId);
+      const { driverId } = getDriverActiveStatusDto;
+      const result = await this.getDriverActiveStatusService(driverId);
       return {
         status: HttpStatus.OK,
         message: 'Get active status successfully',
