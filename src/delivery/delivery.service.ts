@@ -1,8 +1,10 @@
+import { ICheckDriverAccountBalanceRepsones } from './interfaces/check-driver-account-balance-response.interface';
 import {
   UpdateDriverLocationDto,
   Location,
   UpdateDriverActiveStatusDto,
   GetDriverActiveStatusDto,
+  DeliveryDetailDto,
 } from './dto/';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import {
@@ -12,7 +14,11 @@ import {
 } from 'src/constants';
 import { ClientProxy } from '@nestjs/microservices';
 import { DriverAcceptOrderDto } from './dto';
-import { IDriverAcceptOrderResponse } from './interfaces';
+import {
+  IDriverAcceptOrderResponse,
+  IDriverLocation,
+  IDriverWithEAT,
+} from './interfaces';
 import { InjectRedis, Redis } from '@nestjs-modules/ioredis';
 import {
   DispatchDriverEventPayload,
@@ -61,6 +67,8 @@ export class DeliveryService {
     const { driverId, orderId } = acceptOrderDto;
 
     // TODO: check driverId with id of dispatcher
+    // TODO: clear order data
+    // TODO: apply acceptance rate
     this.sendUpdateDriverForOrderEvent({ driverId, orderId });
 
     return {
@@ -70,18 +78,304 @@ export class DeliveryService {
   }
 
   async handleDispatchDriver(order: OrderEventPayload) {
-    const { id } = order;
+    const { id: orderId, delivery } = order;
+    const { restaurantGeom } = delivery;
+    const restaurantLocation = Location.GeometryToLocation(restaurantGeom);
 
-    //TODO: Check driver đủ điều kiện accept đơn
-    // const response = await this.userServiceClient.send(
-    //   'checkDriverAccountBalance',
-    //   {
-    //     order,
-    //     driverId: anyDriverId,
-    //   },
-    // );
-    // TODO: calculate and dispatch driver
-    this.sendDispatchDriverEvent({ orderId: id, driverId: MOCK_DRIVER_ID });
+    const RADIUS = 3;
+    const driverRawListByOrderSetName = `driver:order:${orderId}:raw_list`;
+
+    // save order to reduce retrieve data time
+    const deliveryDetail = await this.saveDeliveryDetailOfOrder(order);
+
+    // find all nearby drivers
+    await this.setDriverListForLocation(
+      restaurantLocation,
+      RADIUS,
+      driverRawListByOrderSetName,
+    );
+
+    const driverListByOrderQueueName = `driver:order:${orderId}:list`;
+
+    // initial best driver queue
+    await this.initialDriverQueueByOrder(
+      orderId,
+      RADIUS,
+      driverListByOrderQueueName,
+      deliveryDetail,
+    );
+
+    // start to dispatch driver
+    while (true) {
+      const result = await this.dispatchDriverByOrderId(
+        orderId,
+        deliveryDetail,
+      );
+      if (result) {
+        break;
+      }
+      const popSuccess = this.popFirstDriverOfOrderQueue(orderId);
+      // can pop => queue is empty
+      if (!popSuccess) {
+        break;
+      }
+    }
+  }
+
+  async saveDeliveryDetailOfOrder(
+    order: OrderEventPayload,
+  ): Promise<DeliveryDetailDto> {
+    const { id } = order;
+    const restaurantLocationOfOrderKey = `order:${id}:delivery_detail`;
+    const deliveryDetail: DeliveryDetailDto = DeliveryDetailDto.fromOrderPayload(
+      order,
+    );
+
+    await this.redis.set(
+      restaurantLocationOfOrderKey,
+      JSON.stringify(deliveryDetail),
+    );
+    return deliveryDetail;
+  }
+
+  async getDeliveryDetailOfOrder(orderId: string): Promise<DeliveryDetailDto> {
+    const restaurantLocationOfOrderKey = `order:${orderId}:delivery_detail`;
+
+    const rawRestaurantLocation = await this.redis.get(
+      restaurantLocationOfOrderKey,
+    );
+
+    const deliveryDetail = JSON.parse(
+      rawRestaurantLocation,
+    ) as DeliveryDetailDto;
+
+    return deliveryDetail;
+  }
+
+  async setDriverListForLocation(
+    location: Location,
+    radius: number,
+    setName: string,
+  ) {
+    const pipeline = this.redis.pipeline();
+
+    // get all keys
+    const hashKeys = Location.getGeoHashesNearLocation(location, radius);
+
+    // delete all expired data of result keys
+    const currentTimestamp = Date.now();
+
+    hashKeys.forEach((geoHash) => {
+      const geoKey = geoHash;
+      // delete expired data before retrieve
+      pipeline.zremrangebyscore(
+        geoKey,
+        -Infinity,
+        currentTimestamp - 30 * 1000,
+      );
+    });
+
+    await pipeline.exec();
+
+    // retrieve all driverId by keys
+
+    // merge driver set by result geo hash
+    pipeline.zunionstore(
+      setName,
+      hashKeys.length,
+      hashKeys[0],
+      ...hashKeys.shift(),
+    );
+
+    await pipeline.exec();
+  }
+
+  async initialDriverQueueByOrder(
+    orderId: string,
+    radius: number,
+    queueName: string,
+    deliveryDetail: DeliveryDetailDto,
+  ) {
+    const driverIds = await this.getDriverIdsOfOrder(orderId);
+
+    // filter drivers
+
+    // populate driver location
+    const driversLocationList = await this.populateDriverLocationByIds(
+      driverIds,
+    );
+
+    // get delivery detail
+
+    const { deliveryDistance, restaurantLocation } = deliveryDetail;
+
+    // calculate EAT
+    const driverWithEATList: IDriverWithEAT[] = driversLocationList.reduce(
+      (prev, { driverId, location: driverLocation }) => {
+        const pickUpDistance = Location.getDistanceFrom2Location(
+          driverLocation,
+          restaurantLocation,
+        );
+        if (pickUpDistance > radius) {
+          return prev;
+        }
+        // thoi gian giao hang du kien = max(thoi gian chuan bi, thoi gian shipper toi cua hang) +
+        // thoi gian di chuyen cua shipper (average_time_per_1km * distance)
+        const DEFAULT_RESTAURANT_PREPARATION_TIME = 15;
+        const AVG_TIME_PER_1KM = 10;
+
+        const pickUpTime = Math.max(
+          DEFAULT_RESTAURANT_PREPARATION_TIME,
+          (pickUpDistance * AVG_TIME_PER_1KM) / 1000,
+        );
+        const estimatedArrivalTime =
+          pickUpTime + (deliveryDistance * AVG_TIME_PER_1KM) / 1000;
+
+        const totalDistance = deliveryDistance + pickUpDistance;
+
+        const newDriverWithEAT: IDriverWithEAT = {
+          driverId,
+          totalDistance,
+          estimatedArrivalTime,
+        };
+        prev.push(newDriverWithEAT);
+        return prev;
+      },
+      [] as IDriverWithEAT[],
+    );
+
+    // sort drivers
+    const scoreAndDrivers: (string | number)[] = driverWithEATList.reduce(
+      (prev, driver) => {
+        prev.push(driver.estimatedArrivalTime);
+        prev.push(JSON.stringify(driver));
+        return prev;
+      },
+      [] as (string | number)[],
+    );
+
+    await this.redis.zadd(queueName, scoreAndDrivers);
+  }
+
+  async dispatchDriverByOrderId(
+    orderId: string,
+    deliveryDetail: DeliveryDetailDto,
+  ): Promise<boolean> {
+    const driver = await this.getNextDriverOfOrderQueue(orderId);
+    if (!driver) {
+      // TODO: handle looking for new active driver
+      return true;
+    }
+    const { driverId, estimatedArrivalTime, totalDistance } = driver;
+    // validate driver to be dispatchable
+
+    // is active
+    const isActive = await this.getDriverActiveStatusService(driverId);
+    if (!isActive) {
+      return false;
+    }
+
+    // is available
+    const isAvailable = await this.getDriverAvailableStatusService(driverId);
+    if (!isAvailable) {
+      return false;
+    }
+
+    // can handle order
+    // const response: ICheckDriverAccountBalanceRepsones = await this.userServiceClient
+    //   .send('checkDriverAccountBalance', {
+    //     order: DeliveryDetailDto.toOrderPayload(deliveryDetail),
+    //     driverId: driverId,
+    //   })
+    //   .toPromise();
+
+    // const { canActive } = response;
+    // if (!canActive) {
+    //   return false;
+    // }
+
+    // dispatch driver
+
+    // TODO: apply acceptance rate
+    this.sendDispatchDriverEvent({
+      orderId: orderId,
+      driverId: driverId,
+      estimatedArrivalTime,
+      totalDistance,
+    });
+
+    // TODO: add delay task to auto decline
+    // TODO: handle decline
+    // TODO: decline -> remove -> reduce acceptance rate -> remove relate data -> try dispatch another driver
+    return true;
+  }
+
+  // TODO: handle order complete -> remove relate data
+
+  async getNextDriverOfOrderQueue(orderId: string): Promise<IDriverWithEAT> {
+    const driverListByOrderQueueName = `driver:order:${orderId}:list`;
+    const driver = await this.redis.zrange(driverListByOrderQueueName, 0, 0);
+    if (!Array.isArray(driver) || driver.length) {
+      return null;
+    }
+    const driverWithEAT: IDriverWithEAT = JSON.parse(driver[0]);
+    return driverWithEAT;
+  }
+
+  async popFirstDriverOfOrderQueue(orderId: string): Promise<boolean> {
+    const driverListByOrderQueueName = `driver:order:${orderId}:list`;
+    const result = await this.redis.zremrangebyrank(
+      driverListByOrderQueueName,
+      0,
+      0,
+    );
+    return result > 0;
+  }
+
+  async getDriverIdsOfOrder(setName: string): Promise<string[]> {
+    const pipeline = this.redis.pipeline();
+    // retrieve driver ids
+    pipeline.zrange(setName, 0, -1);
+
+    const responses = await pipeline.exec();
+
+    const [driverIdsSetResponse] = responses;
+    const [driverIdsSetError, driverIds] = driverIdsSetResponse as [
+      Error,
+      string[],
+    ];
+    return driverIds;
+  }
+
+  async populateDriverLocationByIds(
+    driverIds: string[],
+  ): Promise<IDriverLocation[]> {
+    const pipeline = this.redis.pipeline();
+    // retrieve all driver by driverId
+    const getPreciseLocationKey = (driverId) => `driver:${driverId}:location`;
+    driverIds.forEach((driverId) => {
+      pipeline.get(getPreciseLocationKey(driverId));
+    });
+
+    const driverLocationResponse: [Error, string][] = await pipeline.exec();
+    const results: IDriverLocation[] = driverLocationResponse.map(
+      ([error, location], index) => {
+        return {
+          driverId: driverIds[index],
+          location: JSON.parse(location) as Location,
+        };
+      },
+    );
+    return results;
+  }
+
+  async populateDriverLocationById(driverId: string): Promise<IDriverLocation> {
+    const getPreciseLocationKey = (driverId) => `driver:${driverId}:location`;
+    const location = await this.redis.get(getPreciseLocationKey(driverId));
+    return {
+      driverId,
+      location: JSON.parse(location) as Location,
+    };
   }
 
   async updateDriverLocation(updateDriverLocationDto: UpdateDriverLocationDto) {
@@ -108,7 +402,7 @@ export class DeliveryService {
 
     if (isDriverActive) {
       // update driver set by location
-      pipeline.zadd(geoKey, driverId, currentTimestamp);
+      pipeline.zadd(geoKey, currentTimestamp, driverId);
       pipeline.zremrangebyscore(
         geoKey,
         -Infinity,
@@ -148,6 +442,10 @@ export class DeliveryService {
           longitude,
         });
       }
+      // TODO: check if it is a new driver (is not exist in order queue) and this geo hash is subscribe by some order
+
+      // TODO: add driver to order queue
+      // if dispatch is stopped => try to dispatch
     } catch (e) {}
   }
 
@@ -190,9 +488,18 @@ export class DeliveryService {
     }
   }
 
-  async getDriverActiveStatusService(driverId: string) {
+  async getDriverActiveStatusService(driverId: string): Promise<boolean> {
     const activeKey = `driver:active`;
-    return this.redis.sismember(activeKey, driverId);
+    const result = await this.redis.sismember(activeKey, driverId);
+    return result == 1;
+  }
+
+  async getDriverAvailableStatusService(driverId: string): Promise<boolean> {
+    const orderKey = `driver:${driverId}:order`;
+    const result = await this.redis.get(orderKey);
+
+    // TODO: check if driver has been requested
+    return !!result;
   }
 
   async getDriverActiveStatus(
