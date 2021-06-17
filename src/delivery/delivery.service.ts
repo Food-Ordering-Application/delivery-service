@@ -1,3 +1,4 @@
+import { pipeline } from 'node:stream';
 import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
 import { ICheckDriverAccountBalanceResponse as ICheckDriverAccountBalanceResponse } from './interfaces/check-driver-account-balance-response.interface';
 import {
@@ -49,7 +50,7 @@ export class DeliveryService {
   async sendUpdateDriverForOrderEvent(
     payload: UpdateDriverForOrderEventPayload,
   ) {
-    this.orderServiceClient.emit('updateDriverForOrderEvent', payload);
+    // this.orderServiceClient.emit('updateDriverForOrderEvent', payload);
     this.logger.log(payload, 'noti: updateDriverForOrderEvent');
   }
 
@@ -69,7 +70,10 @@ export class DeliveryService {
     const { driverId, orderId } = acceptOrderDto;
 
     // TODO: check driverId with id of dispatcher
-    // TODO: clear order data
+    // clear order data
+    this.clearOrderData(orderId);
+
+    // TICKET: store order of driver
     // TODO: apply acceptance rate
     this.sendUpdateDriverForOrderEvent({ driverId, orderId });
 
@@ -79,13 +83,47 @@ export class DeliveryService {
     };
   }
 
+  async clearOrderData(orderId: string) {
+    const driverListByOrderQueueName = `order:${orderId}:list`;
+    const driverRawListByOrderSetName = `order:${orderId}:raw_list`;
+    const deliveryDetailKey = `order:${orderId}:delivery_detail`;
+    const orderSubscribeCurrentGeoHash = `order:${orderId}:geoHash`;
+
+    const pipeline = this.redis.pipeline();
+    // remove raw list
+    pipeline.del(driverListByOrderQueueName);
+    // remove dispatch list
+    pipeline.del(driverRawListByOrderSetName);
+    // remove order detail
+    pipeline.del(deliveryDetailKey);
+
+    // get all geohash before remove
+    pipeline.smembers(orderSubscribeCurrentGeoHash);
+    pipeline.del(orderSubscribeCurrentGeoHash);
+
+    let result = await pipeline.exec();
+    const [_1, _2, _3, geoHashListResponse, _4] = result;
+
+    const [error, geoHashList] = geoHashListResponse as [Error, string[]];
+
+    if (Array.isArray(geoHashList)) {
+      geoHashList.forEach((geoHash) => {
+        const ordersSubscribeCurrentGeoHash = `${geoHash}:subscribers`;
+        // remove current order from subscriber list
+        pipeline.srem(ordersSubscribeCurrentGeoHash, orderId);
+      });
+    }
+
+    result = await pipeline.exec();
+  }
+
   async handleDispatchDriver(order: OrderEventPayload) {
     const { id: orderId, delivery } = order;
     const { restaurantGeom } = delivery;
     const restaurantLocation = Location.GeometryToLocation(restaurantGeom);
 
     const RADIUS = 3;
-    const driverRawListByOrderSetName = `driver:order:${orderId}:raw_list`;
+    const driverRawListByOrderSetName = `order:${orderId}:raw_list`;
 
     // save order to reduce retrieve data time
     const deliveryDetail = await this.saveDeliveryDetailOfOrder(order);
@@ -95,9 +133,10 @@ export class DeliveryService {
       restaurantLocation,
       RADIUS,
       driverRawListByOrderSetName,
+      orderId,
     );
 
-    const driverListByOrderQueueName = `driver:order:${orderId}:list`;
+    const driverListByOrderQueueName = `order:${orderId}:list`;
 
     // initial best driver queue
     await this.initialDriverQueueByOrder(
@@ -109,6 +148,10 @@ export class DeliveryService {
     );
 
     // start to dispatch driver
+    await this.startDispatchOrder(orderId, deliveryDetail);
+  }
+
+  async startDispatchOrder(orderId: string, deliveryDetail: DeliveryDetailDto) {
     while (true) {
       const result = await this.dispatchDriverByOrderId(
         orderId,
@@ -143,11 +186,9 @@ export class DeliveryService {
   }
 
   async getDeliveryDetailOfOrder(orderId: string): Promise<DeliveryDetailDto> {
-    const restaurantLocationOfOrderKey = `order:${orderId}:delivery_detail`;
+    const deliveryDetailKey = `order:${orderId}:delivery_detail`;
 
-    const rawRestaurantLocation = await this.redis.get(
-      restaurantLocationOfOrderKey,
-    );
+    const rawRestaurantLocation = await this.redis.get(deliveryDetailKey);
 
     const deliveryDetail = JSON.parse(
       rawRestaurantLocation,
@@ -160,6 +201,7 @@ export class DeliveryService {
     location: Location,
     radius: number,
     setName: string,
+    orderId: string,
   ) {
     const pipeline = this.redis.pipeline();
 
@@ -177,7 +219,17 @@ export class DeliveryService {
         -Infinity,
         currentTimestamp - 30 * 1000,
       );
+
+      // add subscribe to geo current geo hash
+      // => update geo hash => broadcast change and try to dispatch order
+      const ordersSubscribeCurrentGeoHash = `${geoKey}:subscribers`;
+      pipeline.sadd(ordersSubscribeCurrentGeoHash, orderId);
     });
+
+    // save geo hash result to order
+    // => retrieve geo hash by order => remove subscribe
+    const geoHashOfOrder = `order:${orderId}:geoHash`;
+    pipeline.sadd(geoHashOfOrder, hashKeys);
 
     await pipeline.exec();
 
@@ -205,6 +257,9 @@ export class DeliveryService {
     const driverIds = await this.getDriverIdsOfOrder(setName);
 
     // filter drivers
+    // remove non active driver by get driver by geo hash
+
+    // TICKET: remove non available driver
 
     // populate driver location
     const driversLocationList = await this.populateDriverLocationByIds(
@@ -222,9 +277,10 @@ export class DeliveryService {
           driverLocation,
           restaurantLocation,
         );
-        if (pickUpDistance > radius * 1000) {
-          return prev;
-        }
+        // TICKET: disable radius check, use raw list as driver list
+        // if (pickUpDistance > radius * 1000) {
+        //   return prev;
+        // }
         // thoi gian giao hang du kien = max(thoi gian chuan bi, thoi gian shipper toi cua hang) +
         // thoi gian di chuyen cua shipper (average_time_per_1km * distance)
         const DEFAULT_RESTAURANT_PREPARATION_TIME = 15;
@@ -273,7 +329,7 @@ export class DeliveryService {
     const driver = await this.getNextDriverOfOrderQueue(orderId);
     if (!driver) {
       this.logger.log(
-        `There is no driver available nearby restaurant location`,
+        `There is no remain driver available nearby restaurant location`,
       );
       // TODO: handle looking for new active driver
       return true;
@@ -315,6 +371,9 @@ export class DeliveryService {
 
     // dispatch driver
 
+    // TICKET: separate order request with order handling of driver
+    const orderKey = `driver:${driverId}:order`;
+    const result = await this.redis.set(orderKey, orderId);
     // TODO: apply acceptance rate
     this.sendDispatchDriverEvent({
       orderId: orderId,
@@ -325,14 +384,14 @@ export class DeliveryService {
 
     // TODO: add delay task to auto decline
     // TODO: handle decline
-    // TODO: decline -> remove -> reduce acceptance rate -> remove relate data -> try dispatch another driver
+    // TODO: decline -> remove -> reduce acceptance rate -> remove relate data (order request) -> try dispatch another driver
     return true;
   }
 
   // TODO: handle order complete -> remove relate data
 
   async getNextDriverOfOrderQueue(orderId: string): Promise<IDriverWithEAT> {
-    const driverListByOrderQueueName = `driver:order:${orderId}:list`;
+    const driverListByOrderQueueName = `order:${orderId}:list`;
     const driver = await this.redis.zrange(driverListByOrderQueueName, 0, 0);
     if (!Array.isArray(driver) || !driver.length) {
       return null;
@@ -342,7 +401,7 @@ export class DeliveryService {
   }
 
   async popFirstDriverOfOrderQueue(orderId: string): Promise<boolean> {
-    const driverListByOrderQueueName = `driver:order:${orderId}:list`;
+    const driverListByOrderQueueName = `order:${orderId}:list`;
     const result = await this.redis.zremrangebyrank(
       driverListByOrderQueueName,
       0,
@@ -517,7 +576,8 @@ export class DeliveryService {
     const orderKey = `driver:${driverId}:order`;
     const result = await this.redis.get(orderKey);
 
-    // TODO: check if driver has been requested
+    // check if driver has been requested
+    // TICKET: separate order request with order handling of driver
     return !result;
   }
 
