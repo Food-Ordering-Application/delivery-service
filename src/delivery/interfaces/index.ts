@@ -5,3 +5,4 @@ export { ICheckDriverAccountBalanceResponse } from './check-driver-account-balan
 export { IGetDriverActiveStatusResponse } from './get-driver-active-status-response.interface';
 export { IUpdateDriverActiveStatusResponse } from './update-driver-active-status-response.interface';
 export { IDriverDeclineOrderResponse } from './driver-decline-order-response.interface';
+export { IGetLatestDriverLocationResponse } from './get-latest-driver-location-response.interface';

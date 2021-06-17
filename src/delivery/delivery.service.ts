@@ -1,3 +1,4 @@
+import { GetLatestDriverLocationDto } from './dto/get-latest-driver-location.dto';
 import { pipeline } from 'node:stream';
 import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
 import { ICheckDriverAccountBalanceResponse as ICheckDriverAccountBalanceResponse } from './interfaces/check-driver-account-balance-response.interface';
@@ -23,6 +24,7 @@ import {
   IDriverLocation,
   IDriverWithEAT,
   IGetDriverActiveStatusResponse,
+  IGetLatestDriverLocationResponse,
 } from './interfaces';
 import { InjectRedis, Redis } from '@nestjs-modules/ioredis';
 import {
@@ -52,7 +54,7 @@ export class DeliveryService {
   async sendUpdateDriverForOrderEvent(
     payload: UpdateDriverForOrderEventPayload,
   ) {
-    // this.orderServiceClient.emit('updateDriverForOrderEvent', payload);
+    this.orderServiceClient.emit('updateDriverForOrderEvent', payload);
     this.logger.log(payload, 'noti: updateDriverForOrderEvent');
   }
 
@@ -214,6 +216,7 @@ export class DeliveryService {
     // TODO?: remove relate data
     const { delivery } = order;
     const { driverId } = delivery;
+    this.logger.log(`${driverId} finished an order`);
     await this.clearCurrentOrderOfDriver(driverId);
   }
 
@@ -517,6 +520,9 @@ export class DeliveryService {
   async populateDriverLocationById(driverId: string): Promise<IDriverLocation> {
     const getPreciseLocationKey = (driverId) => `driver:${driverId}:location`;
     const location = await this.redis.get(getPreciseLocationKey(driverId));
+    if (!location) {
+      return null;
+    }
     return {
       driverId,
       location: JSON.parse(location) as Location,
@@ -570,12 +576,12 @@ export class DeliveryService {
         getOrderByDriverResponse,
       ] = pipelineResponse;
 
-      console.log({
-        updateLocationOfDriverResponse,
-        updateDriverSetResponse,
-        removeExpiredDriverSetResponse,
-        getOrderByDriverResponse,
-      });
+      // console.log({
+      //   updateLocationOfDriverResponse,
+      //   updateDriverSetResponse,
+      //   removeExpiredDriverSetResponse,
+      //   getOrderByDriverResponse,
+      // });
 
       const [_, orderId] = getOrderByDriverResponse;
       if (orderId) {
@@ -629,6 +635,36 @@ export class DeliveryService {
       return {
         status: HttpStatus.INTERNAL_SERVER_ERROR,
         message: e.message,
+      };
+    }
+  }
+
+  async getLatestLocationOfDriver(
+    getLatestDriverLocationDto: GetLatestDriverLocationDto,
+  ): Promise<IGetLatestDriverLocationResponse> {
+    const { driverId } = getLatestDriverLocationDto;
+    try {
+      const driverLocation = await this.populateDriverLocationById(driverId);
+      if (!driverLocation) {
+        return {
+          status: HttpStatus.NOT_FOUND,
+          message: 'Driver location not found',
+          data: null,
+        };
+      }
+      const { location } = driverLocation;
+      return {
+        status: HttpStatus.OK,
+        message: 'Get latest location of driver successfully',
+        data: {
+          location,
+        },
+      };
+    } catch (e) {
+      return {
+        status: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: e.message,
+        data: null,
       };
     }
   }

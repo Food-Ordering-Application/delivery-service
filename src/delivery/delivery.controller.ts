@@ -8,6 +8,7 @@ import {
   UpdateDriverActiveStatusDto,
   UpdateDriverLocationDto,
   DriverDeclineOrderDto,
+  GetLatestDriverLocationDto,
 } from './dto';
 import { OrderEventPayload } from './events/order.event';
 import {
@@ -49,6 +50,15 @@ export class DeliveryController {
     @Payload() updateDriverLocationDto: UpdateDriverLocationDto,
   ) {
     this.deliveryService.updateDriverLocation(updateDriverLocationDto);
+  }
+
+  @MessagePattern('getLatestDriverLocation')
+  async getLatestLocationOfDriver(
+    @Payload() getLatestDriverLocationDto: GetLatestDriverLocationDto,
+  ) {
+    return this.deliveryService.getLatestLocationOfDriver(
+      getLatestDriverLocationDto,
+    );
   }
 
   @MessagePattern('getDriverActiveStatus')
