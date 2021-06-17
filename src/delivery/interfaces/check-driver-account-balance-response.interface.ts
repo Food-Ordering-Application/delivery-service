@@ -1,5 +1,5 @@
-export interface ICheckDriverAccountBalanceRepsones {
+export interface ICheckDriverAccountBalanceResponse {
   status: number;
   message: string;
-  canActive: boolean;
+  canAccept: boolean;
 }

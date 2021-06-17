@@ -1,5 +1,5 @@
 import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
-import { ICheckDriverAccountBalanceRepsones } from './interfaces/check-driver-account-balance-response.interface';
+import { ICheckDriverAccountBalanceResponse as ICheckDriverAccountBalanceResponse } from './interfaces/check-driver-account-balance-response.interface';
 import {
   UpdateDriverLocationDto,
   Location,
@@ -103,6 +103,7 @@ export class DeliveryService {
     await this.initialDriverQueueByOrder(
       orderId,
       RADIUS,
+      driverRawListByOrderSetName,
       driverListByOrderQueueName,
       deliveryDetail,
     );
@@ -116,6 +117,7 @@ export class DeliveryService {
       if (result) {
         break;
       }
+      this.logger.log(`try to dispatch order ${orderId} to another driver`);
       const popSuccess = this.popFirstDriverOfOrderQueue(orderId);
       // can pop => queue is empty
       if (!popSuccess) {
@@ -182,23 +184,25 @@ export class DeliveryService {
     // retrieve all driverId by keys
 
     // merge driver set by result geo hash
+    const remainHashKeys = [...hashKeys.slice(1)];
     pipeline.zunionstore(
       setName,
       hashKeys.length,
       hashKeys[0],
-      ...hashKeys.shift(),
+      ...remainHashKeys,
     );
 
-    await pipeline.exec();
+    const result = await pipeline.exec();
   }
 
   async initialDriverQueueByOrder(
     orderId: string,
     radius: number,
+    setName: string,
     queueName: string,
     deliveryDetail: DeliveryDetailDto,
   ) {
-    const driverIds = await this.getDriverIdsOfOrder(orderId);
+    const driverIds = await this.getDriverIdsOfOrder(setName);
 
     // filter drivers
 
@@ -218,7 +222,7 @@ export class DeliveryService {
           driverLocation,
           restaurantLocation,
         );
-        if (pickUpDistance > radius) {
+        if (pickUpDistance > radius * 1000) {
           return prev;
         }
         // thoi gian giao hang du kien = max(thoi gian chuan bi, thoi gian shipper toi cua hang) +
@@ -226,9 +230,11 @@ export class DeliveryService {
         const DEFAULT_RESTAURANT_PREPARATION_TIME = 15;
         const AVG_TIME_PER_1KM = 10;
 
-        const pickUpTime = Math.max(
-          DEFAULT_RESTAURANT_PREPARATION_TIME,
-          (pickUpDistance * AVG_TIME_PER_1KM) / 1000,
+        const pickUpTime = Math.round(
+          Math.max(
+            DEFAULT_RESTAURANT_PREPARATION_TIME,
+            (pickUpDistance * AVG_TIME_PER_1KM) / 1000,
+          ),
         );
         const estimatedArrivalTime =
           pickUpTime + (deliveryDistance * AVG_TIME_PER_1KM) / 1000;
@@ -255,8 +261,9 @@ export class DeliveryService {
       },
       [] as (string | number)[],
     );
-
-    await this.redis.zadd(queueName, scoreAndDrivers);
+    const pipeline = this.redis.pipeline();
+    pipeline.zadd(queueName, ...scoreAndDrivers);
+    const result = await pipeline.exec();
   }
 
   async dispatchDriverByOrderId(
@@ -265,36 +272,46 @@ export class DeliveryService {
   ): Promise<boolean> {
     const driver = await this.getNextDriverOfOrderQueue(orderId);
     if (!driver) {
+      this.logger.log(
+        `There is no driver available nearby restaurant location`,
+      );
       // TODO: handle looking for new active driver
       return true;
     }
     const { driverId, estimatedArrivalTime, totalDistance } = driver;
+    this.logger.log(`try to dispatch order ${orderId} to driver ${driverId}`);
     // validate driver to be dispatchable
 
     // is active
     const isActive = await this.getDriverActiveStatusService(driverId);
     if (!isActive) {
+      this.logger.log(`driver ${driverId} is no longer active`);
       return false;
     }
 
     // is available
     const isAvailable = await this.getDriverAvailableStatusService(driverId);
     if (!isAvailable) {
+      this.logger.log(
+        `driver ${driverId} is not available (already accepted or requested)`,
+      );
       return false;
     }
 
     // can handle order
-    // const response: ICheckDriverAccountBalanceRepsones = await this.userServiceClient
-    //   .send('checkDriverAccountBalance', {
-    //     order: DeliveryDetailDto.toOrderPayload(deliveryDetail),
-    //     driverId: driverId,
-    //   })
-    //   .toPromise();
-
-    // const { canActive } = response;
-    // if (!canActive) {
-    //   return false;
-    // }
+    const response: ICheckDriverAccountBalanceResponse = await this.userServiceClient
+      .send('checkDriverAccountBalance', {
+        order: DeliveryDetailDto.toOrderPayload(deliveryDetail),
+        driverId: driverId,
+      })
+      .toPromise();
+    const { canAccept, message } = response;
+    if (!canAccept) {
+      this.logger.log(
+        `driver ${driverId} doesnt have enough balance to handle order, ${message}`,
+      );
+      return false;
+    }
 
     // dispatch driver
 
@@ -317,7 +334,7 @@ export class DeliveryService {
   async getNextDriverOfOrderQueue(orderId: string): Promise<IDriverWithEAT> {
     const driverListByOrderQueueName = `driver:order:${orderId}:list`;
     const driver = await this.redis.zrange(driverListByOrderQueueName, 0, 0);
-    if (!Array.isArray(driver) || driver.length) {
+    if (!Array.isArray(driver) || !driver.length) {
       return null;
     }
     const driverWithEAT: IDriverWithEAT = JSON.parse(driver[0]);
@@ -501,7 +518,7 @@ export class DeliveryService {
     const result = await this.redis.get(orderKey);
 
     // TODO: check if driver has been requested
-    return !!result;
+    return !result;
   }
 
   async getDriverActiveStatus(

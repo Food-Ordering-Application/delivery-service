@@ -6,6 +6,7 @@ import {
   GetDriverActiveStatusDto,
   DriverAcceptOrderDto,
   UpdateDriverActiveStatusDto,
+  UpdateDriverLocationDto,
 } from './dto';
 import { OrderEventPayload } from './events/order.event';
 import {
@@ -27,6 +28,13 @@ export class DeliveryController {
   @EventPattern('orderConfirmedByRestaurantEvent')
   async handleDispatchDriver(@Payload() order: OrderEventPayload) {
     this.deliveryService.handleDispatchDriver(order);
+  }
+
+  @EventPattern('updateDriverLocation')
+  async updateDriverLocation(
+    @Payload() updateDriverLocationDto: UpdateDriverLocationDto,
+  ) {
+    this.deliveryService.updateDriverLocation(updateDriverLocationDto);
   }
 
   @MessagePattern('getDriverActiveStatus')

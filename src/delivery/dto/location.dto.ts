@@ -100,6 +100,6 @@ export class Location {
         Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     const d = R * c * 1000; // Distance in KM
-    return d;
+    return Math.round(d / 100) * 100;
   }
 }
