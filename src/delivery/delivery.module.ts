@@ -59,13 +59,14 @@ import { RedisModule } from '@nestjs-modules/ioredis';
         }),
       },
     ]),
-    RedisModule.forRoot({
-      config: {
-        host: 'localhost',
-        port: 6379,
-        username: '123',
-        password: 'redis_password',
-      },
+    RedisModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        config: {
+          url: configService.get('REDIS_URL'),
+        },
+      }),
     }),
   ],
   controllers: [DeliveryController],
