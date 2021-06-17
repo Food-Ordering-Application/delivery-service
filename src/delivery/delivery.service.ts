@@ -69,7 +69,25 @@ export class DeliveryService {
   ): Promise<IDriverAcceptOrderResponse> {
     const { driverId, orderId } = acceptOrderDto;
 
-    // TODO: check driverId with id of dispatcher
+    // check driverId with id of dispatcher
+    const currentOrder = await this.getCurrentOrderOfDriver(driverId);
+    if (!currentOrder) {
+      return {
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Order request is expired',
+      };
+    }
+
+    if (orderId !== currentOrder) {
+      return {
+        status: HttpStatus.BAD_REQUEST,
+        message:
+          'Cannot accept this order. You have already had another order to handle',
+      };
+    }
+
+    // accept success
+
     // clear order data
     this.clearOrderData(orderId);
 
@@ -579,6 +597,12 @@ export class DeliveryService {
     // check if driver has been requested
     // TICKET: separate order request with order handling of driver
     return !result;
+  }
+
+  async getCurrentOrderOfDriver(driverId: string): Promise<string> {
+    const orderKey = `driver:${driverId}:order`;
+    const result = await this.redis.get(orderKey);
+    return result ? result : null;
   }
 
   async getDriverActiveStatus(
