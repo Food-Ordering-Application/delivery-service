@@ -7,10 +7,12 @@ import {
   DriverAcceptOrderDto,
   UpdateDriverActiveStatusDto,
   UpdateDriverLocationDto,
+  DriverDeclineOrderDto,
 } from './dto';
 import { OrderEventPayload } from './events/order.event';
 import {
   IDriverAcceptOrderResponse,
+  IDriverDeclineOrderResponse,
   IGetDriverActiveStatusResponse,
 } from './interfaces';
 
@@ -23,6 +25,13 @@ export class DeliveryController {
     @Payload() acceptOrderDto: DriverAcceptOrderDto,
   ): Promise<IDriverAcceptOrderResponse> {
     return this.deliveryService.acceptOrder(acceptOrderDto);
+  }
+
+  @MessagePattern('driverDeclineOrder')
+  async declineOrder(
+    @Payload() driverDeclineOrderDto: DriverDeclineOrderDto,
+  ): Promise<IDriverDeclineOrderResponse> {
+    return this.deliveryService.declineOrder(driverDeclineOrderDto);
   }
 
   @EventPattern('orderConfirmedByRestaurantEvent')

@@ -7,6 +7,7 @@ import {
   UpdateDriverActiveStatusDto,
   GetDriverActiveStatusDto,
   DeliveryDetailDto,
+  DriverDeclineOrderDto,
 } from './dto/';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import {
@@ -18,6 +19,7 @@ import { ClientProxy } from '@nestjs/microservices';
 import { DriverAcceptOrderDto } from './dto';
 import {
   IDriverAcceptOrderResponse,
+  IDriverDeclineOrderResponse,
   IDriverLocation,
   IDriverWithEAT,
   IGetDriverActiveStatusResponse,
@@ -92,12 +94,50 @@ export class DeliveryService {
     this.clearOrderData(orderId);
 
     // TICKET: store order of driver
-    // TODO: apply acceptance rate
+    // TICKET: apply acceptance rate
     this.sendUpdateDriverForOrderEvent({ driverId, orderId });
 
     return {
       status: HttpStatus.OK,
       message: 'Accept order successfully',
+    };
+  }
+
+  // handle decline
+  async declineOrder(
+    declineOrderDto: DriverDeclineOrderDto,
+  ): Promise<IDriverDeclineOrderResponse> {
+    const { driverId, orderId } = declineOrderDto;
+    const currentOrder = await this.getCurrentOrderOfDriver(driverId);
+    if (!currentOrder) {
+      return {
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Order request is expired',
+      };
+    }
+
+    if (orderId !== currentOrder) {
+      return {
+        status: HttpStatus.BAD_REQUEST,
+        message:
+          'You cannot decline this order. This is not your assigned order',
+      };
+    }
+
+    // remove relate data (order request)
+    await this.clearCurrentOrderOfDriver(driverId);
+
+    // TICKET: reduce acceptance rate
+    // decline -> remove
+    const isNotEmpty = await this.popFirstDriverOfOrderQueue(orderId);
+    if (isNotEmpty) {
+      // try dispatch another driver
+      this.tryDispatchOrderForAnotherDriver(orderId);
+    }
+
+    return {
+      status: HttpStatus.OK,
+      message: 'Decline order successfully',
     };
   }
 
@@ -170,9 +210,16 @@ export class DeliveryService {
   }
 
   async handleDriverCompleteOrder(order: OrderEventPayload) {
-    const { id: orderId, delivery } = order;
+    // handle order complete
+    // TODO?: remove relate data
+    const { delivery } = order;
     const { driverId } = delivery;
     await this.clearCurrentOrderOfDriver(driverId);
+  }
+
+  async tryDispatchOrderForAnotherDriver(orderId: string) {
+    const deliveryDetail = await this.getDeliveryDetailOfOrder(orderId);
+    this.startDispatchOrder(orderId, deliveryDetail);
   }
 
   async startDispatchOrder(orderId: string, deliveryDetail: DeliveryDetailDto) {
@@ -398,7 +445,7 @@ export class DeliveryService {
     // TICKET: separate order request with order handling of driver
     const orderKey = `driver:${driverId}:order`;
     const result = await this.redis.set(orderKey, orderId);
-    // TODO: apply acceptance rate
+    // TICKET: apply acceptance rate
     this.sendDispatchDriverEvent({
       orderId: orderId,
       driverId: driverId,
@@ -407,12 +454,8 @@ export class DeliveryService {
     });
 
     // TODO: add delay task to auto decline
-    // TODO: handle decline
-    // TODO: decline -> remove -> reduce acceptance rate -> remove relate data (order request) -> try dispatch another driver
     return true;
   }
-
-  // TODO: handle order complete -> remove relate data
 
   async getNextDriverOfOrderQueue(orderId: string): Promise<IDriverWithEAT> {
     const driverListByOrderQueueName = `order:${orderId}:list`;

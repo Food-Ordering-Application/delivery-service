@@ -4,3 +4,4 @@ export { IDriverWithEAT } from './driver-with-EAT.interface';
 export { ICheckDriverAccountBalanceResponse } from './check-driver-account-balance-response.interface';
 export { IGetDriverActiveStatusResponse } from './get-driver-active-status-response.interface';
 export { IUpdateDriverActiveStatusResponse } from './update-driver-active-status-response.interface';
+export { IDriverDeclineOrderResponse } from './driver-decline-order-response.interface';
