@@ -1,23 +1,30 @@
-import { GetLatestDriverLocationDto } from './dto/get-latest-driver-location.dto';
-import { pipeline } from 'node:stream';
-import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
-import { ICheckDriverAccountBalanceResponse as ICheckDriverAccountBalanceResponse } from './interfaces/check-driver-account-balance-response.interface';
-import {
-  UpdateDriverLocationDto,
-  Location,
-  UpdateDriverActiveStatusDto,
-  GetDriverActiveStatusDto,
-  DeliveryDetailDto,
-  DriverDeclineOrderDto,
-} from './dto/';
+import { InjectRedis, Redis } from '@nestjs-modules/ioredis';
+import { InjectQueue } from '@nestjs/bull';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import { ClientProxy } from '@nestjs/microservices';
+import { Queue } from 'bull';
 import {
+  DISPATCHER_QUEUE,
   NOTIFICATION_SERVICE,
   ORDER_SERVICE,
   USER_SERVICE,
 } from 'src/constants';
-import { ClientProxy } from '@nestjs/microservices';
 import { DriverAcceptOrderDto } from './dto';
+import {
+  DeliveryDetailDto,
+  DriverDeclineOrderDto,
+  GetDriverActiveStatusDto,
+  Location,
+  UpdateDriverActiveStatusDto,
+  UpdateDriverLocationDto,
+} from './dto/';
+import { GetLatestDriverLocationDto } from './dto/get-latest-driver-location.dto';
+import {
+  DispatchDriverEventPayload,
+  OrderEventPayload,
+  OrderLocationUpdateEventPayload,
+  UpdateDriverForOrderEventPayload,
+} from './events';
 import {
   IDriverAcceptOrderResponse,
   IDriverDeclineOrderResponse,
@@ -26,15 +33,9 @@ import {
   IGetDriverActiveStatusResponse,
   IGetLatestDriverLocationResponse,
 } from './interfaces';
-import { InjectRedis, Redis } from '@nestjs-modules/ioredis';
-import {
-  DispatchDriverEventPayload,
-  OrderEventPayload,
-  OrderLocationUpdateEventPayload,
-  UpdateDriverForOrderEventPayload,
-} from './events';
+import { ICheckDriverAccountBalanceResponse as ICheckDriverAccountBalanceResponse } from './interfaces/check-driver-account-balance-response.interface';
+import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
 
-const MOCK_DRIVER_ID = 'a22f3f78-be7f-11eb-8529-0242ac130003';
 @Injectable()
 export class DeliveryService {
   constructor(
@@ -47,6 +48,9 @@ export class DeliveryService {
 
     @InjectRedis()
     private readonly redis: Redis,
+
+    @InjectQueue(DISPATCHER_QUEUE)
+    private dispatcherQueue: Queue,
   ) {}
 
   private readonly logger = new Logger('DeliveryService');
@@ -91,6 +95,8 @@ export class DeliveryService {
     }
 
     // accept success
+    this.logger.log(`Driver ${driverId} accepted, remove timeout job`);
+    await this.removeTimeoutDeclineJob(acceptOrderDto);
 
     // clear order data
     this.clearOrderData(orderId);
@@ -108,8 +114,12 @@ export class DeliveryService {
   // handle decline
   async declineOrder(
     declineOrderDto: DriverDeclineOrderDto,
+    isAuto = false,
   ): Promise<IDriverDeclineOrderResponse> {
     const { driverId, orderId } = declineOrderDto;
+    this.logger.log(
+      `Order ${orderId} request has been decline by driver ${driverId}`,
+    );
     const currentOrder = await this.getCurrentOrderOfDriver(driverId);
     if (!currentOrder) {
       return {
@@ -129,6 +139,10 @@ export class DeliveryService {
     // remove relate data (order request)
     await this.clearCurrentOrderOfDriver(driverId);
 
+    if (!isAuto) {
+      this.logger.log(`Driver ${driverId} declined, remove timeout job`);
+      await this.removeTimeoutDeclineJob(declineOrderDto);
+    }
     // TICKET: reduce acceptance rate
     // decline -> remove
     const isNotEmpty = await this.popFirstDriverOfOrderQueue(orderId);
@@ -141,6 +155,13 @@ export class DeliveryService {
       status: HttpStatus.OK,
       message: 'Decline order successfully',
     };
+  }
+
+  async removeTimeoutDeclineJob(declineOrderDto: DriverDeclineOrderDto) {
+    const { driverId, orderId } = declineOrderDto;
+    const jobId = `${driverId}-decline-${orderId}`;
+    const job = await this.dispatcherQueue.getJob(jobId);
+    await job.remove();
   }
 
   async clearOrderData(orderId: string) {
@@ -291,7 +312,7 @@ export class DeliveryService {
       pipeline.zremrangebyscore(
         geoKey,
         -Infinity,
-        currentTimestamp - 30 * 1000,
+        currentTimestamp - 60 * 1000,
       );
 
       // add subscribe to geo current geo hash
@@ -402,9 +423,6 @@ export class DeliveryService {
   ): Promise<boolean> {
     const driver = await this.getNextDriverOfOrderQueue(orderId);
     if (!driver) {
-      this.logger.log(
-        `There is no remain driver available nearby restaurant location`,
-      );
       // TODO: handle looking for new active driver
       return true;
     }
@@ -456,7 +474,11 @@ export class DeliveryService {
       totalDistance,
     });
 
-    // TODO: add delay task to auto decline
+    const payload: DriverDeclineOrderDto = { driverId, orderId };
+    await this.dispatcherQueue.add('timeoutDecline', payload, {
+      delay: 60 * 1000,
+      jobId: `${driverId}-decline-${orderId}`,
+    });
     return true;
   }
 
@@ -464,6 +486,9 @@ export class DeliveryService {
     const driverListByOrderQueueName = `order:${orderId}:list`;
     const driver = await this.redis.zrange(driverListByOrderQueueName, 0, 0);
     if (!Array.isArray(driver) || !driver.length) {
+      this.logger.log(
+        `There is no remain driver available nearby restaurant location to handle order ${orderId}`,
+      );
       return null;
     }
     const driverWithEAT: IDriverWithEAT = JSON.parse(driver[0]);
@@ -477,6 +502,11 @@ export class DeliveryService {
       0,
       0,
     );
+    if (result == 0) {
+      this.logger.log(
+        `There is no remain driver available nearby restaurant location to handle order ${orderId}`,
+      );
+    }
     return result > 0;
   }
 
@@ -557,7 +587,7 @@ export class DeliveryService {
       pipeline.zremrangebyscore(
         geoKey,
         -Infinity,
-        currentTimestamp - 30 * 1000,
+        currentTimestamp - 60 * 1000,
       );
 
       // get ongoing orderId of driver to broadcast update
@@ -615,7 +645,6 @@ export class DeliveryService {
     try {
       if (activeStatus) {
         pipeline.sadd(activeKey, driverId);
-        await this.updateDriverLocation({ driverId, latitude, longitude });
       } else {
         pipeline.srem(activeKey, driverId);
       }
@@ -626,6 +655,10 @@ export class DeliveryService {
           throw 'Redis error';
         }
       });
+
+      if (activeStatus) {
+        await this.updateDriverLocation({ driverId, latitude, longitude });
+      }
 
       return {
         status: HttpStatus.OK,
