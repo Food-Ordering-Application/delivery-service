@@ -1,11 +1,16 @@
+import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
 import { Controller } from '@nestjs/common';
 import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { DeliveryService } from './delivery.service';
-import { GetDriverActiveStatusDto, DriverAcceptOrderDto } from './dto';
+import {
+  GetDriverActiveStatusDto,
+  DriverAcceptOrderDto,
+  UpdateDriverActiveStatusDto,
+} from './dto';
 import { OrderEventPayload } from './events/order.event';
 import {
   IDriverAcceptOrderResponse,
-  IGetDriverActiveStatus,
+  IGetDriverActiveStatusResponse,
 } from './interfaces';
 
 @Controller()
@@ -27,7 +32,16 @@ export class DeliveryController {
   @MessagePattern('getDriverActiveStatus')
   async getDriverActiveStatus(
     @Payload() getDriverActiveStatusDto: GetDriverActiveStatusDto,
-  ): Promise<IGetDriverActiveStatus> {
+  ): Promise<IGetDriverActiveStatusResponse> {
     return this.deliveryService.getDriverActiveStatus(getDriverActiveStatusDto);
+  }
+
+  @MessagePattern('updateDriverActiveStatus')
+  async updateDriverActiveStatus(
+    @Payload() updateDriverActiveStatusDto: UpdateDriverActiveStatusDto,
+  ): Promise<IUpdateDriverActiveStatusResponse> {
+    return this.deliveryService.updateDriverActiveStatus(
+      updateDriverActiveStatusDto,
+    );
   }
 }

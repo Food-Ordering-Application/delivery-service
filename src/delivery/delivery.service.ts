@@ -1,3 +1,4 @@
+import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
 import { ICheckDriverAccountBalanceRepsones } from './interfaces/check-driver-account-balance-response.interface';
 import {
   UpdateDriverLocationDto,
@@ -18,7 +19,7 @@ import {
   IDriverAcceptOrderResponse,
   IDriverLocation,
   IDriverWithEAT,
-  IGetDriverActiveStatus,
+  IGetDriverActiveStatusResponse,
 } from './interfaces';
 import { InjectRedis, Redis } from '@nestjs-modules/ioredis';
 import {
@@ -452,7 +453,7 @@ export class DeliveryService {
 
   async updateDriverActiveStatus(
     updateDriverActiveStatusDto: UpdateDriverActiveStatusDto,
-  ) {
+  ): Promise<IUpdateDriverActiveStatusResponse> {
     const {
       driverId,
       activeStatus,
@@ -505,7 +506,7 @@ export class DeliveryService {
 
   async getDriverActiveStatus(
     getDriverActiveStatusDto: GetDriverActiveStatusDto,
-  ): Promise<IGetDriverActiveStatus> {
+  ): Promise<IGetDriverActiveStatusResponse> {
     try {
       const { driverId } = getDriverActiveStatusDto;
       const result = await this.getDriverActiveStatusService(driverId);

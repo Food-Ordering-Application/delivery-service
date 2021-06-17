@@ -1,4 +1,4 @@
-export interface IGetDriverActiveStatus {
+export interface IGetDriverActiveStatusResponse {
   status: number;
   message: string;
   data?: {
