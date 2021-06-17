@@ -20,7 +20,7 @@ export class OrderEventPayload {
 
 export class DeliveryPayload {
   // customerId?: string;
-  // driverId?: string;
+  driverId?: string;
   // customerAddress: string;
   // customerGeom: { type: string; coordinates: number[] };
   // restaurantAddress: string;

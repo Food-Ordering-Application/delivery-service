@@ -169,6 +169,12 @@ export class DeliveryService {
     await this.startDispatchOrder(orderId, deliveryDetail);
   }
 
+  async handleDriverCompleteOrder(order: OrderEventPayload) {
+    const { id: orderId, delivery } = order;
+    const { driverId } = delivery;
+    await this.clearCurrentOrderOfDriver(driverId);
+  }
+
   async startDispatchOrder(orderId: string, deliveryDetail: DeliveryDetailDto) {
     while (true) {
       const result = await this.dispatchDriverByOrderId(
@@ -603,6 +609,12 @@ export class DeliveryService {
     const orderKey = `driver:${driverId}:order`;
     const result = await this.redis.get(orderKey);
     return result ? result : null;
+  }
+
+  async clearCurrentOrderOfDriver(driverId: string): Promise<boolean> {
+    const orderKey = `driver:${driverId}:order`;
+    const result = await this.redis.del(orderKey);
+    return result > 0;
   }
 
   async getDriverActiveStatus(

@@ -30,6 +30,11 @@ export class DeliveryController {
     this.deliveryService.handleDispatchDriver(order);
   }
 
+  @EventPattern('orderHasBeenCompletedEvent')
+  async handleDriverCompleteOrder(@Payload() order: OrderEventPayload) {
+    this.deliveryService.handleDriverCompleteOrder(order);
+  }
+
   @EventPattern('updateDriverLocation')
   async updateDriverLocation(
     @Payload() updateDriverLocationDto: UpdateDriverLocationDto,
