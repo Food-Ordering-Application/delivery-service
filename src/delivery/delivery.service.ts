@@ -18,6 +18,7 @@ import {
   IDriverAcceptOrderResponse,
   IDriverLocation,
   IDriverWithEAT,
+  IGetDriverActiveStatus,
 } from './interfaces';
 import { InjectRedis, Redis } from '@nestjs-modules/ioredis';
 import {
@@ -504,7 +505,7 @@ export class DeliveryService {
 
   async getDriverActiveStatus(
     getDriverActiveStatusDto: GetDriverActiveStatusDto,
-  ) {
+  ): Promise<IGetDriverActiveStatus> {
     try {
       const { driverId } = getDriverActiveStatusDto;
       const result = await this.getDriverActiveStatusService(driverId);

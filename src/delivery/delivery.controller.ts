@@ -1,9 +1,12 @@
 import { Controller } from '@nestjs/common';
 import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { DeliveryService } from './delivery.service';
-import { DriverAcceptOrderDto } from './dto';
+import { GetDriverActiveStatusDto, DriverAcceptOrderDto } from './dto';
 import { OrderEventPayload } from './events/order.event';
-import { IDriverAcceptOrderResponse } from './interfaces';
+import {
+  IDriverAcceptOrderResponse,
+  IGetDriverActiveStatus,
+} from './interfaces';
 
 @Controller()
 export class DeliveryController {
@@ -19,5 +22,12 @@ export class DeliveryController {
   @EventPattern('orderConfirmedByRestaurantEvent')
   async handleDispatchDriver(@Payload() order: OrderEventPayload) {
     this.deliveryService.handleDispatchDriver(order);
+  }
+
+  @MessagePattern('getDriverActiveStatus')
+  async getDriverActiveStatus(
+    @Payload() getDriverActiveStatusDto: GetDriverActiveStatusDto,
+  ): Promise<IGetDriverActiveStatus> {
+    return this.deliveryService.getDriverActiveStatus(getDriverActiveStatusDto);
   }
 }
