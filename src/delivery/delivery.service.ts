@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bull';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { Queue } from 'bull';
+import * as Redlock from 'redlock';
 import {
   DISPATCHER_QUEUE,
   NOTIFICATION_SERVICE,
@@ -51,8 +52,15 @@ export class DeliveryService {
 
     @InjectQueue(DISPATCHER_QUEUE)
     private dispatcherQueue: Queue,
-  ) {}
+  ) {
+    this.redLock = new Redlock([this.redis], {
+      retryCount: 10,
+      retryDelay: 100,
+      retryJitter: 50,
+    });
+  }
 
+  private redLock: Redlock;
   private readonly logger = new Logger('DeliveryService');
 
   async sendUpdateDriverForOrderEvent(
@@ -248,10 +256,10 @@ export class DeliveryService {
 
   async startDispatchOrder(orderId: string, deliveryDetail: DeliveryDetailDto) {
     while (true) {
-      const result = await this.dispatchDriverByOrderId(
-        orderId,
-        deliveryDetail,
-      );
+      let result = false;
+
+      result = await this.dispatchDriverByOrderId(orderId, deliveryDetail);
+
       if (result) {
         break;
       }
@@ -429,6 +437,7 @@ export class DeliveryService {
     };
     return newDriverWithEAT;
   }
+
   async dispatchDriverByOrderId(
     orderId: string,
     deliveryDetail: DeliveryDetailDto,
@@ -449,42 +458,39 @@ export class DeliveryService {
     }
 
     // is available
-    const isAvailable = await this.getDriverAvailableStatusService(driverId);
-    if (!isAvailable) {
-      this.logger.log(
-        `driver ${driverId} is not available (already accepted or requested)`,
-      );
-      return false;
-    }
-
-    // can handle order
-    const response: ICheckDriverAccountBalanceResponse = await this.userServiceClient
-      .send('checkDriverAccountBalance', {
-        order: DeliveryDetailDto.toOrderPayload(deliveryDetail),
-        driverId: driverId,
-      })
-      .toPromise();
-    const { canAccept, message } = response;
-    if (!canAccept) {
-      this.logger.log(
-        `driver ${driverId} doesnt have enough balance to handle order, ${message}`,
-      );
-      return false;
-    }
-
-    // dispatch driver
-
-    // TICKET: separate order request with order handling of driver
-    const isAvailableDoubleCheck = await this.getDriverAvailableStatusService(
-      driverId,
-    );
-
-    // FIX!: WORKAROUND for 2 order concurrency
-    if (!isAvailableDoubleCheck) {
-      return false;
-    }
-
     const orderKey = `driver:${driverId}:order`;
+    let lock: Redlock.Lock = null;
+    try {
+      lock = await this.redLock.lock('lock:key', 3000);
+      const isAvailable = await this.getDriverAvailableStatusService(driverId);
+      if (!isAvailable) {
+        this.logger.log(
+          `driver ${driverId} is not available (already accepted or requested)`,
+        );
+        return false;
+      }
+
+      // can handle order
+      const response: ICheckDriverAccountBalanceResponse = await this.userServiceClient
+        .send('checkDriverAccountBalance', {
+          order: DeliveryDetailDto.toOrderPayload(deliveryDetail),
+          driverId: driverId,
+        })
+        .toPromise();
+      const { canAccept, message } = response;
+      if (!canAccept) {
+        this.logger.log(
+          `driver ${driverId} doesnt have enough balance to handle order, ${message}`,
+        );
+        return false;
+      }
+      // dispatch driver
+    } catch (e) {
+      // await lock.unlock();
+      console.log(e.message);
+    } finally {
+      await lock.unlock();
+    }
     const result = await this.redis.set(orderKey, orderId);
     // TICKET: apply acceptance rate
     this.sendDispatchDriverEvent({
@@ -842,11 +848,14 @@ export class DeliveryService {
 
   async getDriverAvailableStatusService(driverId: string): Promise<boolean> {
     const orderKey = `driver:${driverId}:order`;
-    const result = await this.redis.get(orderKey);
-
-    // check if driver has been requested
-    // TICKET: separate order request with order handling of driver
-    return !result;
+    try {
+      const result = await this.redis.get(orderKey);
+      // check if driver has been requested
+      // TICKET: separate order request with order handling of driver
+      return !result;
+    } catch (e) {
+      return false;
+    }
   }
 
   async getCurrentOrderOfDriver(driverId: string): Promise<string> {
