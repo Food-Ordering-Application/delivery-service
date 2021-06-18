@@ -256,20 +256,32 @@ export class DeliveryService {
 
   async startDispatchOrder(orderId: string, deliveryDetail: DeliveryDetailDto) {
     while (true) {
-      let result = false;
+      const result = await this.dispatchDriverByOrderId(
+        orderId,
+        deliveryDetail,
+      );
 
-      result = await this.dispatchDriverByOrderId(orderId, deliveryDetail);
+      const { didDispatch, retry } = result;
 
-      if (result) {
+      if (didDispatch || (!didDispatch && !retry)) {
         break;
+      } else if (retry) {
+        // remove from raw list
+        const { driverId } = result;
+        await this.removeDriverFromLocationList(orderId, driverId);
       }
       this.logger.log(`try to dispatch order ${orderId} to another driver`);
-      const popSuccess = this.popFirstDriverOfOrderQueue(orderId);
+      const popSuccess = await this.popFirstDriverOfOrderQueue(orderId);
       // can pop => queue is empty
       if (!popSuccess) {
         break;
       }
     }
+  }
+
+  async removeDriverFromLocationList(orderId: string, driverId: string) {
+    const driverRawListByOrderSetName = `order:${orderId}:raw_list`;
+    const result = await this.redis.zrem(driverRawListByOrderSetName, driverId);
   }
 
   async saveDeliveryDetailOfOrder(
@@ -441,10 +453,10 @@ export class DeliveryService {
   async dispatchDriverByOrderId(
     orderId: string,
     deliveryDetail: DeliveryDetailDto,
-  ): Promise<boolean> {
+  ): Promise<{ didDispatch: boolean; retry: boolean; driverId?: string }> {
     const driver = await this.getNextDriverOfOrderQueue(orderId);
     if (!driver) {
-      return true;
+      return { didDispatch: false, retry: false };
     }
     const { driverId, estimatedArrivalTime, totalDistance } = driver;
     this.logger.log(`try to dispatch order ${orderId} to driver ${driverId}`);
@@ -454,7 +466,11 @@ export class DeliveryService {
     const isActive = await this.getDriverActiveStatusService(driverId);
     if (!isActive) {
       this.logger.log(`driver ${driverId} is no longer active`);
-      return false;
+      return {
+        didDispatch: false,
+        retry: true,
+        driverId,
+      };
     }
 
     // is available
@@ -467,7 +483,11 @@ export class DeliveryService {
         this.logger.log(
           `driver ${driverId} is not available (already accepted or requested)`,
         );
-        return false;
+        return {
+          didDispatch: false,
+          retry: true,
+          driverId,
+        };
       }
 
       // can handle order
@@ -482,7 +502,10 @@ export class DeliveryService {
         this.logger.log(
           `driver ${driverId} doesnt have enough balance to handle order, ${message}`,
         );
-        return false;
+        return {
+          didDispatch: false,
+          retry: false,
+        };
       }
       // dispatch driver
     } catch (e) {
@@ -502,11 +525,14 @@ export class DeliveryService {
 
     const payload: DriverDeclineOrderDto = { driverId, orderId };
     await this.dispatcherQueue.add('timeoutDecline', payload, {
-      delay: 10 * 1000,
+      delay: 60 * 1000,
       jobId: `${driverId}-decline-${orderId}`,
     });
 
-    return true;
+    return {
+      didDispatch: true,
+      retry: false,
+    };
   }
 
   async getNextDriverOfOrderQueue(orderId: string): Promise<IDriverWithEAT> {
