@@ -1,9 +1,21 @@
+import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
 import { Controller } from '@nestjs/common';
 import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { DeliveryService } from './delivery.service';
-import { DriverAcceptOrderDto } from './dto';
+import {
+  GetDriverActiveStatusDto,
+  DriverAcceptOrderDto,
+  UpdateDriverActiveStatusDto,
+  UpdateDriverLocationDto,
+  DriverDeclineOrderDto,
+  GetLatestDriverLocationDto,
+} from './dto';
 import { OrderEventPayload } from './events/order.event';
-import { IDriverAcceptOrderResponse } from './interfaces';
+import {
+  IDriverAcceptOrderResponse,
+  IDriverDeclineOrderResponse,
+  IGetDriverActiveStatusResponse,
+} from './interfaces';
 
 @Controller()
 export class DeliveryController {
@@ -16,8 +28,52 @@ export class DeliveryController {
     return this.deliveryService.acceptOrder(acceptOrderDto);
   }
 
+  @MessagePattern('driverDeclineOrder')
+  async declineOrder(
+    @Payload() driverDeclineOrderDto: DriverDeclineOrderDto,
+  ): Promise<IDriverDeclineOrderResponse> {
+    return this.deliveryService.declineOrder(driverDeclineOrderDto);
+  }
+
   @EventPattern('orderConfirmedByRestaurantEvent')
   async handleDispatchDriver(@Payload() order: OrderEventPayload) {
     this.deliveryService.handleDispatchDriver(order);
+  }
+
+  @EventPattern('orderHasBeenCompletedEvent')
+  async handleDriverCompleteOrder(@Payload() order: OrderEventPayload) {
+    this.deliveryService.handleDriverCompleteOrder(order);
+  }
+
+  @EventPattern('updateDriverLocation')
+  async updateDriverLocation(
+    @Payload() updateDriverLocationDto: UpdateDriverLocationDto,
+  ) {
+    this.deliveryService.updateDriverLocation(updateDriverLocationDto);
+  }
+
+  @MessagePattern('getLatestDriverLocation')
+  async getLatestLocationOfDriver(
+    @Payload() getLatestDriverLocationDto: GetLatestDriverLocationDto,
+  ) {
+    return this.deliveryService.getLatestLocationOfDriver(
+      getLatestDriverLocationDto,
+    );
+  }
+
+  @MessagePattern('getDriverActiveStatus')
+  async getDriverActiveStatus(
+    @Payload() getDriverActiveStatusDto: GetDriverActiveStatusDto,
+  ): Promise<IGetDriverActiveStatusResponse> {
+    return this.deliveryService.getDriverActiveStatus(getDriverActiveStatusDto);
+  }
+
+  @MessagePattern('updateDriverActiveStatus')
+  async updateDriverActiveStatus(
+    @Payload() updateDriverActiveStatusDto: UpdateDriverActiveStatusDto,
+  ): Promise<IUpdateDriverActiveStatusResponse> {
+    return this.deliveryService.updateDriverActiveStatus(
+      updateDriverActiveStatusDto,
+    );
   }
 }

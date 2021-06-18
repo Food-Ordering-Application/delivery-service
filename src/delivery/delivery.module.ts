@@ -1,13 +1,16 @@
+import { BullModule } from '@nestjs/bull';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import {
+  DISPATCHER_QUEUE,
   NOTIFICATION_SERVICE,
   ORDER_SERVICE,
   USER_SERVICE,
 } from 'src/constants';
 import { DeliveryController } from './delivery.controller';
 import { DeliveryService } from './delivery.service';
+import { DispatcherProcessor } from './dispatcher.processor';
 
 @Module({
   imports: [
@@ -58,9 +61,12 @@ import { DeliveryService } from './delivery.service';
         }),
       },
     ]),
+    BullModule.registerQueue({
+      name: DISPATCHER_QUEUE,
+    }),
   ],
   controllers: [DeliveryController],
-  providers: [DeliveryService],
-  exports: [DeliveryService],
+  providers: [DeliveryService, DispatcherProcessor],
+  exports: [DeliveryService, DispatcherProcessor],
 })
 export class DeliveryModule {}
