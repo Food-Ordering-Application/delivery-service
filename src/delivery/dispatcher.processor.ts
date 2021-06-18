@@ -20,4 +20,16 @@ export class DispatcherProcessor {
     this.logger.log(result);
     return;
   }
+
+  @Process('dispatchNewDriver')
+  async handleDispatchNewDriver(job: Job<string>) {
+    const { data } = job;
+    const orderId = data;
+    this.logger.log(`dispatchNewDriver: ${orderId}`);
+    const result = await this.deliveryService.tryDispatchOrderForAnotherDriver(
+      orderId,
+    );
+    // this.logger.log(result);
+    return;
+  }
 }

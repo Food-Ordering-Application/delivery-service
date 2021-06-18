@@ -367,36 +367,11 @@ export class DeliveryService {
 
     // calculate EAT
     const driverWithEATList: IDriverWithEAT[] = driversLocationList.reduce(
-      (prev, { driverId, location: driverLocation }) => {
-        const pickUpDistance = Location.getDistanceFrom2Location(
-          driverLocation,
-          restaurantLocation,
+      (prev, driverData) => {
+        const newDriverWithEAT = this.getDriverWithEAT(
+          driverData,
+          deliveryDetail,
         );
-        // TICKET: disable radius check, use raw list as driver list
-        // if (pickUpDistance > radius * 1000) {
-        //   return prev;
-        // }
-        // thoi gian giao hang du kien = max(thoi gian chuan bi, thoi gian shipper toi cua hang) +
-        // thoi gian di chuyen cua shipper (average_time_per_1km * distance)
-        const DEFAULT_RESTAURANT_PREPARATION_TIME = 15;
-        const AVG_TIME_PER_1KM = 10;
-
-        const pickUpTime = Math.round(
-          Math.max(
-            DEFAULT_RESTAURANT_PREPARATION_TIME,
-            (pickUpDistance * AVG_TIME_PER_1KM) / 1000,
-          ),
-        );
-        const estimatedArrivalTime =
-          pickUpTime + (deliveryDistance * AVG_TIME_PER_1KM) / 1000;
-
-        const totalDistance = deliveryDistance + pickUpDistance;
-
-        const newDriverWithEAT: IDriverWithEAT = {
-          driverId,
-          totalDistance,
-          estimatedArrivalTime,
-        };
         prev.push(newDriverWithEAT);
         return prev;
       },
@@ -417,13 +392,49 @@ export class DeliveryService {
     const result = await pipeline.exec();
   }
 
+  getDriverWithEAT(
+    driverData: IDriverLocation,
+    deliveryData: DeliveryDetailDto,
+  ) {
+    const { driverId, location: driverLocation } = driverData;
+    const { deliveryDistance, restaurantLocation } = deliveryData;
+    const pickUpDistance = Location.getDistanceFrom2Location(
+      driverLocation,
+      restaurantLocation,
+    );
+    // TICKET: disable radius check, use raw list as driver list
+    // if (pickUpDistance > radius * 1000) {
+    //   return prev;
+    // }
+    // thoi gian giao hang du kien = max(thoi gian chuan bi, thoi gian shipper toi cua hang) +
+    // thoi gian di chuyen cua shipper (average_time_per_1km * distance)
+    const DEFAULT_RESTAURANT_PREPARATION_TIME = 15;
+    const AVG_TIME_PER_1KM = 10;
+
+    const pickUpTime = Math.round(
+      Math.max(
+        DEFAULT_RESTAURANT_PREPARATION_TIME,
+        (pickUpDistance * AVG_TIME_PER_1KM) / 1000,
+      ),
+    );
+    const estimatedArrivalTime =
+      pickUpTime + (deliveryDistance * AVG_TIME_PER_1KM) / 1000;
+
+    const totalDistance = deliveryDistance + pickUpDistance;
+
+    const newDriverWithEAT: IDriverWithEAT = {
+      driverId,
+      totalDistance,
+      estimatedArrivalTime,
+    };
+    return newDriverWithEAT;
+  }
   async dispatchDriverByOrderId(
     orderId: string,
     deliveryDetail: DeliveryDetailDto,
   ): Promise<boolean> {
     const driver = await this.getNextDriverOfOrderQueue(orderId);
     if (!driver) {
-      // TODO: handle looking for new active driver
       return true;
     }
     const { driverId, estimatedArrivalTime, totalDistance } = driver;
@@ -464,6 +475,15 @@ export class DeliveryService {
     // dispatch driver
 
     // TICKET: separate order request with order handling of driver
+    const isAvailableDoubleCheck = await this.getDriverAvailableStatusService(
+      driverId,
+    );
+
+    // FIX!: WORKAROUND for 2 order concurrency
+    if (!isAvailableDoubleCheck) {
+      return false;
+    }
+
     const orderKey = `driver:${driverId}:order`;
     const result = await this.redis.set(orderKey, orderId);
     // TICKET: apply acceptance rate
@@ -476,9 +496,10 @@ export class DeliveryService {
 
     const payload: DriverDeclineOrderDto = { driverId, orderId };
     await this.dispatcherQueue.add('timeoutDecline', payload, {
-      delay: 60 * 1000,
+      delay: 10 * 1000,
       jobId: `${driverId}-decline-${orderId}`,
     });
+
     return true;
   }
 
@@ -622,12 +643,123 @@ export class DeliveryService {
           latitude,
           longitude,
         });
+      } else {
+        this.publishDriverUpdate(geoKey, driverId);
       }
-      // TODO: check if it is a new driver (is not exist in order queue) and this geo hash is subscribe by some order
+    } catch (e) {
+      this.logger.error(e.message);
+    }
+  }
 
-      // TODO: add driver to order queue
-      // if dispatch is stopped => try to dispatch
-    } catch (e) {}
+  async publishDriverUpdate(geoHash: string, driverId: string) {
+    // check this geo hash is subscribe by some order
+
+    // get geoHash subscribers
+    const ordersSubscribeCurrentGeoHash = `${geoHash}:subscribers`;
+    const orderIds = await this.redis.smembers(ordersSubscribeCurrentGeoHash);
+    if (!Array.isArray(orderIds) || !orderIds.length) {
+      return;
+    }
+
+    let pipeline = this.redis.pipeline();
+
+    orderIds.forEach((orderId) => {
+      const driverRawListByOrderSetName = `order:${orderId}:raw_list`;
+      // check if it is a new driver (is not exist in order queue)
+      pipeline.zadd(driverRawListByOrderSetName, Infinity, driverId);
+    });
+
+    const currentDriverExistInOrderQueueResponses = (await pipeline.exec()) as [
+      Error,
+      number,
+    ][];
+
+    // get order Ids need driver to dispatch
+    const orderIdsSubscribeCurrentChange = currentDriverExistInOrderQueueResponses.reduce(
+      (prev, [error, numberOfInsertDriver], index) => {
+        // already exist in order driver set
+        if (numberOfInsertDriver == null || numberOfInsertDriver == 0) {
+          return prev;
+        }
+        prev.push(orderIds[index]);
+        return prev;
+      },
+      [] as string[],
+    );
+
+    if (
+      !Array.isArray(orderIdsSubscribeCurrentChange) ||
+      !orderIdsSubscribeCurrentChange.length
+    ) {
+      return;
+    }
+
+    // get driver location
+    const driverLocation = await this.populateDriverLocationById(driverId);
+
+    pipeline = this.redis.pipeline();
+
+    // get order details to calculate EAT
+    orderIdsSubscribeCurrentChange.forEach((orderId) => {
+      const deliveryDetailKey = `order:${orderId}:delivery_detail`;
+      pipeline.get(deliveryDetailKey);
+    });
+
+    const deliveryDetailOfOrdersSubcribeCurrentChangeResponses = (await pipeline.exec()) as [
+      Error,
+      string,
+    ][];
+
+    const deliveryDetails = deliveryDetailOfOrdersSubcribeCurrentChangeResponses.map(
+      ([error, json]) => JSON.parse(json) as DeliveryDetailDto,
+    );
+
+    pipeline = this.redis.pipeline();
+    // count driver in list to check if dispatch is stopped
+    orderIdsSubscribeCurrentChange.forEach((orderId) => {
+      const driverListByOrderQueueName = `order:${orderId}:list`;
+      pipeline.zcard(driverListByOrderQueueName);
+    });
+
+    const numberOfDriverInOrderQueueResponse = (await pipeline.exec()) as [
+      Error,
+      number,
+    ][];
+
+    pipeline = this.redis.pipeline();
+
+    const numberOfDriverInOrderQueue = numberOfDriverInOrderQueueResponse.map(
+      ([error, card]) => card,
+    );
+
+    // calculate EAT and add to driver list
+    deliveryDetails.forEach((deliveryDetail) => {
+      // add driver to order queue
+      const { orderId } = deliveryDetail;
+      const driverWithEAT = this.getDriverWithEAT(
+        driverLocation,
+        deliveryDetail,
+      );
+      const driverListByOrderQueueName = `order:${orderId}:list`;
+      const scoreAndDriver = [
+        driverWithEAT.estimatedArrivalTime,
+        JSON.stringify(driverWithEAT),
+      ];
+      pipeline.zadd(driverListByOrderQueueName, ...scoreAndDriver);
+    });
+
+    const addResult = await pipeline.exec();
+
+    const promises = orderIdsSubscribeCurrentChange.map((orderId, index) => {
+      // TICKET: if dispatch is stopped => try to dispatch
+
+      const count = numberOfDriverInOrderQueue[index];
+      if (count == 0) {
+        return this.dispatcherQueue.add('dispatchNewDriver', orderId, {});
+      }
+    });
+
+    await Promise.all(promises);
   }
 
   async updateDriverActiveStatus(
