@@ -261,12 +261,14 @@ export class DeliveryService {
         deliveryDetail,
       );
 
-      const { didDispatch, retry } = result;
+      const { didDispatch, retry, driverId } = result;
 
-      if (didDispatch || (!didDispatch && !retry)) {
+      if (didDispatch || !driverId) {
+        // already dispatch, schedule timeout task, wait for driver accept/decline/timeout to continue
+        // queue is empty => stop the loop
         break;
       } else if (retry) {
-        // remove from raw list
+        // remove from raw list to possibly re-add to order queue
         const { driverId } = result;
         await this.removeDriverFromLocationList(orderId, driverId);
       }
@@ -453,10 +455,10 @@ export class DeliveryService {
   async dispatchDriverByOrderId(
     orderId: string,
     deliveryDetail: DeliveryDetailDto,
-  ): Promise<{ didDispatch: boolean; retry: boolean; driverId?: string }> {
+  ): Promise<{ didDispatch: boolean; retry: boolean; driverId: string }> {
     const driver = await this.getNextDriverOfOrderQueue(orderId);
     if (!driver) {
-      return { didDispatch: false, retry: false };
+      return { didDispatch: false, retry: false, driverId: null };
     }
     const { driverId, estimatedArrivalTime, totalDistance } = driver;
     this.logger.log(`try to dispatch order ${orderId} to driver ${driverId}`);
@@ -505,6 +507,7 @@ export class DeliveryService {
         return {
           didDispatch: false,
           retry: false,
+          driverId,
         };
       }
       // dispatch driver
@@ -532,6 +535,7 @@ export class DeliveryService {
     return {
       didDispatch: true,
       retry: false,
+      driverId,
     };
   }
 
