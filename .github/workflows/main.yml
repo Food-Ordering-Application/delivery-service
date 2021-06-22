@@ -30,10 +30,10 @@ jobs:
           
           # Heroku API key associated with provided user's email.
           # Api Key is available under your Heroku account settings.
-          heroku_api_key: 72832ad5-c17a-437b-8bde-74abecfb459c
+          heroku_api_key: 1f94d1b1-5ee9-4a3b-803c-9be311ff87d2
           
           # Name of the heroku application to which the build is to be sent.
-          heroku_app_name: delivery-service-foa
+          heroku_app_name: delivery-sv
 
           # (Optional, default: "./")
           # Dockerfile directory.
