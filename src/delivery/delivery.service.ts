@@ -477,7 +477,7 @@ export class DeliveryService {
     const orderKey = `driver:${driverId}:order`;
     let lock: Redlock.Lock = null;
     try {
-      lock = await this.redLock.lock('lock:key', 3000);
+      lock = await this.redLock.lock(`lock:${driverId}:dispatch`, 3000);
       const isAvailable = await this.getDriverAvailableStatusService(driverId);
       if (!isAvailable) {
         this.logger.log(
