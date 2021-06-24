@@ -1,6 +1,12 @@
 import { InjectRedis, Redis } from '@nestjs-modules/ioredis';
 import { InjectQueue } from '@nestjs/bull';
-import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { Queue } from 'bull';
 import * as Redlock from 'redlock';
@@ -36,9 +42,9 @@ import {
 } from './interfaces';
 import { ICheckDriverAccountBalanceResponse as ICheckDriverAccountBalanceResponse } from './interfaces/check-driver-account-balance-response.interface';
 import { IUpdateDriverActiveStatusResponse } from './interfaces/update-driver-active-status-response.interface';
-
+import * as PubNub from 'pubnub';
 @Injectable()
-export class DeliveryService {
+export class DeliveryService implements OnApplicationBootstrap {
   constructor(
     @Inject(NOTIFICATION_SERVICE)
     private notificationServiceClient: ClientProxy,
@@ -58,6 +64,59 @@ export class DeliveryService {
       retryDelay: 100,
       retryJitter: 50,
     });
+  }
+
+  onApplicationBootstrap() {
+    if (!process.env.PUBNUB_SUBSCRIBE_KEY) {
+      this.logger.error('Cannot found PubNub subscribe key');
+      return;
+    }
+    const pubnub = new PubNub({
+      subscribeKey: process.env.PUBNUB_SUBSCRIBE_KEY,
+      uuid: 'delivery-service',
+    });
+
+    const updateLocationChannelHandler = (event: {
+      message: 'location-update';
+      payload: any;
+    }) => {
+      const { message, payload } = event;
+      switch (message) {
+        case 'location-update': {
+          const payloadConverter = (payload: any): UpdateDriverLocationDto => {
+            const {
+              driverId,
+              latitude,
+              longitude,
+            } = payload as UpdateDriverLocationDto;
+            if (!driverId || !latitude || !longitude) {
+              return null;
+            }
+            return { driverId, latitude, longitude };
+          };
+          const convertedPayload = payloadConverter(payload);
+          if (!convertedPayload) {
+            return;
+          }
+          this.updateDriverLocation(convertedPayload);
+        }
+      }
+    };
+
+    const messageHandler: Record<
+      string,
+      (event: { message: 'location-update'; payload: any }) => void
+    > = {
+      'driver-location': updateLocationChannelHandler,
+    };
+
+    pubnub.addListener({
+      message: ({ channel, message }) => {
+        console.log({ channel, note: 'received PubNub event', message });
+        messageHandler[channel](message);
+      },
+    });
+    pubnub.subscribe({ channels: ['driver-location'] });
   }
 
   private redLock: Redlock;
@@ -625,6 +684,9 @@ export class DeliveryService {
 
     // calculate geo hash for update driver set by location
     const geoHash = Location.toS2CellId(location).toToken();
+
+    this.logger.log(`driver ${driverId} joined ${geoHash}`);
+
     const currentTimestamp = Date.now();
 
     const preciseLocationKey = `driver:${driverId}:location`;
