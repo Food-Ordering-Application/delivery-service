@@ -267,6 +267,7 @@ export class DeliveryService implements OnApplicationBootstrap {
 
   async handleDispatchDriver(order: OrderEventPayload) {
     const { id: orderId, delivery } = order;
+    this.logger.log(`dispatching order ${orderId}`);
     const { restaurantGeom } = delivery;
     const restaurantLocation = Location.GeometryToLocation(restaurantGeom);
 
