@@ -161,6 +161,9 @@ export class DeliveryService implements OnApplicationBootstrap {
       };
     }
 
+    const driver = await this.getNextDriverOfOrderQueue(orderId);
+    const { estimatedArrivalTime, totalDistance } = driver;
+
     // accept success
     this.logger.log(`Driver ${driverId} accepted, remove timeout job`);
     await this.removeTimeoutDeclineJob(acceptOrderDto);
@@ -170,7 +173,12 @@ export class DeliveryService implements OnApplicationBootstrap {
 
     // TICKET: store order of driver
     // TICKET: apply acceptance rate
-    this.sendUpdateDriverForOrderEvent({ driverId, orderId });
+    this.sendUpdateDriverForOrderEvent({
+      driverId,
+      orderId,
+      estimatedArrivalTime,
+      totalDistance,
+    });
 
     return {
       status: HttpStatus.OK,
