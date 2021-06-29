@@ -92,6 +92,9 @@ export class DeliveryService implements OnApplicationBootstrap {
             if (!driverId || !latitude || !longitude) {
               return null;
             }
+            console.log(
+              `location-update: ${driverId} - ${latitude} - ${longitude}`,
+            );
             return { driverId, latitude, longitude };
           };
           const convertedPayload = payloadConverter(payload);
@@ -112,7 +115,7 @@ export class DeliveryService implements OnApplicationBootstrap {
 
     pubnub.addListener({
       message: ({ channel, message }) => {
-        console.log({ channel, note: 'received PubNub event', message });
+        console.log({ channel, note: 'received PubNub event' });
         messageHandler[channel](message);
       },
     });
@@ -131,7 +134,7 @@ export class DeliveryService implements OnApplicationBootstrap {
 
   async sendDispatchDriverEvent(payload: DispatchDriverEventPayload) {
     this.notificationServiceClient.emit('dispatchDriverEvent', payload);
-    this.logger.log(payload, 'noti: dispatchDriverEvent');
+    this.logger.verbose(payload, 'noti: dispatchDriverEvent');
   }
 
   async sendOrderLocationUpdateEvent(payload: OrderLocationUpdateEventPayload) {
@@ -165,7 +168,10 @@ export class DeliveryService implements OnApplicationBootstrap {
     const { estimatedArrivalTime, totalDistance } = driver;
 
     // accept success
-    this.logger.log(`Driver ${driverId} accepted, remove timeout job`);
+    this.logger.warn(
+      `Driver ${driverId} accepted, remove timeout job`,
+      'timeout',
+    );
     await this.removeTimeoutDeclineJob(acceptOrderDto);
 
     // clear order data
@@ -192,7 +198,7 @@ export class DeliveryService implements OnApplicationBootstrap {
     isAuto = false,
   ): Promise<IDriverDeclineOrderResponse> {
     const { driverId, orderId } = declineOrderDto;
-    this.logger.log(
+    this.logger.warn(
       `Order ${orderId} request has been decline by driver ${driverId}`,
     );
     const currentOrder = await this.getCurrentOrderOfDriver(driverId);
@@ -215,7 +221,7 @@ export class DeliveryService implements OnApplicationBootstrap {
     await this.clearCurrentOrderOfDriver(driverId);
 
     if (!isAuto) {
-      this.logger.log(`Driver ${driverId} declined, remove timeout job`);
+      this.logger.warn(`Driver ${driverId} declined, remove timeout job`);
       await this.removeTimeoutDeclineJob(declineOrderDto);
     }
     // TICKET: reduce acceptance rate
@@ -275,7 +281,7 @@ export class DeliveryService implements OnApplicationBootstrap {
 
   async handleDispatchDriver(order: OrderEventPayload) {
     const { id: orderId, delivery } = order;
-    this.logger.log(`dispatching order ${orderId}`);
+    this.logger.verbose(`dispatching order ${orderId}`);
     const { restaurantGeom } = delivery;
     const restaurantLocation = Location.GeometryToLocation(restaurantGeom);
 
@@ -313,7 +319,7 @@ export class DeliveryService implements OnApplicationBootstrap {
     // TODO?: remove relate data
     const { delivery } = order;
     const { driverId } = delivery;
-    this.logger.log(`${driverId} finished an order`);
+    this.logger.verbose(`${driverId} finished an order`);
     await this.clearCurrentOrderOfDriver(driverId);
   }
 
@@ -340,7 +346,7 @@ export class DeliveryService implements OnApplicationBootstrap {
         const { driverId } = result;
         await this.removeDriverFromLocationList(orderId, driverId);
       }
-      this.logger.log(`try to dispatch order ${orderId} to another driver`);
+      this.logger.error(`try to dispatch order ${orderId} to another driver`);
       const popSuccess = await this.popFirstDriverOfOrderQueue(orderId);
       // can pop => queue is empty
       if (!popSuccess) {
@@ -550,7 +556,7 @@ export class DeliveryService implements OnApplicationBootstrap {
       lock = await this.redLock.lock(`lock:${driverId}:dispatch`, 3000);
       const isAvailable = await this.getDriverAvailableStatusService(driverId);
       if (!isAvailable) {
-        this.logger.log(
+        this.logger.error(
           `driver ${driverId} is not available (already accepted or requested)`,
         );
         return {
@@ -569,7 +575,7 @@ export class DeliveryService implements OnApplicationBootstrap {
         .toPromise();
       const { canAccept, message } = response;
       if (!canAccept) {
-        this.logger.log(
+        this.logger.error(
           `driver ${driverId} doesnt have enough balance to handle order, ${message}`,
         );
         return {
@@ -611,7 +617,7 @@ export class DeliveryService implements OnApplicationBootstrap {
     const driverListByOrderQueueName = `order:${orderId}:list`;
     const driver = await this.redis.zrange(driverListByOrderQueueName, 0, 0);
     if (!Array.isArray(driver) || !driver.length) {
-      this.logger.log(
+      this.logger.error(
         `There is no remain driver available nearby restaurant location to handle order ${orderId}`,
       );
       return null;
@@ -628,7 +634,7 @@ export class DeliveryService implements OnApplicationBootstrap {
       0,
     );
     if (result == 0) {
-      this.logger.log(
+      this.logger.error(
         `There is no remain driver available nearby restaurant location to handle order ${orderId}`,
       );
     }
