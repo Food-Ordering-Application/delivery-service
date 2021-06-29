@@ -602,7 +602,7 @@ export class DeliveryService implements OnApplicationBootstrap {
 
     const payload: DriverDeclineOrderDto = { driverId, orderId };
     await this.dispatcherQueue.add('timeoutDecline', payload, {
-      delay: 60 * 1000,
+      delay: 35 * 1000,
       jobId: `${driverId}-decline-${orderId}`,
     });
 
